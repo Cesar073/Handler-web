@@ -86,12 +86,14 @@ AGREGAR:
 (04) - Ahora sabemos que todo lo que buscamos lo encontramos, pero tenemos que poner un try porque si cambia la web eso pincha, hay que prevenirlo
 (XX) - Cambiar todos los prints y explotar al máximo la librería de logging.
 (XX) - Para el parámetro de "parts" se construye en base a un lista se crea con valores enteros no pudiendo usar otra opción. Debería ser una lista de valores entonces si fuesen enteros se los puede crear con un range desde la app que lo ejecuta en vez de forzar a ser números desde acá.
+(XX) - Cambiar nombre de variable implicity_wait porque ya no hace referencia a lo mismo.
 """
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException
 from time import sleep
+from datetime import datetime as dt
 import threading
 
 import pyautogui as pa
@@ -133,21 +135,21 @@ class HandlerWebSelenium:
         Método que se encarga de ir leyendo las tareas que se tienen que realizar.
         Las mismas deben tener un metodo que indique cuándo cortar el bucle si se genera uno infinito.
         """
+        start = dt.now()
         self.steps = steps
         self.tasks = tasks
-        print("**** INICIO STEP ****")
         step_counter = 0
         self.list_of_list = []
+        name_step = self.steps[step_counter].get('name_step', "NN")
+        print(f"\n**** INICIO STEP: {name_step} ****")
         
         while True:
-            step_counter += 1
             if not self.steps.get(step_counter, 0):
-                print(f"**** END LOOP ****\n")
                 break
-            print(f"Name step: {self.steps[step_counter]['name_step']}")
+
             if self.steps[step_counter].get("stop", False):
                 break
-            value = self.run_tasks(self.tasks[self.steps[step_counter]["name_step"]])
+            value = self.run_tasks(self.tasks[self.steps[step_counter]["name_task"]])
 
             if self.steps[step_counter]["is_false_finish"]:
                 if value == False:
@@ -158,24 +160,36 @@ class HandlerWebSelenium:
                     pass
                 else:
                     value -= 1
+            step_counter += 1
+        
+        print(f"**** END STEP - time:{dt.now() - start} ****\n")
         
         # Retornamos la lista que se haya generado
         if value_return == "list":
+            print(f"Lista a devolver: {self.list_of_list}")
             return self.list_of_list
+        return []
 
     def run_tasks(self, task, element = ""):
         """
         Le llegan tareas, cada una se ejecuta en orden en función a su nombre.
         """
         
-        print(f"Name task: {task.get('name_task', 'N/N')}")
+        #print(f"Name general task: {task.get('name_task', 'NN')}")
+        
         try:
             _lenght = len(task)
             counter = 0
+            
             while counter < _lenght:
                 for keys, values in task[counter].items():
 
+                    if keys == "exist":
+                        continue
+
                     if keys == "name_task":
+                        print("****************************************")
+                        print(f"Name task: {task[counter]['name_task']}")
                         continue
 
                     if keys == "open_url":
@@ -189,10 +203,14 @@ class HandlerWebSelenium:
                             if values["move_mouse"]:
                                 threading.Thread(target=self._move_mouse).start()
                         self.driver.get(values["url"])
-                        self.driver.implicitly_wait(values.get("implicitly_wait", 50))
+                        self.driver.implicitly_wait(values.get("implicitly_wait", 10))
                     
                     elif keys == "find_element":
-                        element = self._find_element(values["pos_element"], bucle=values.get("implicitly_wait", 50))
+                        element = self._find_element(
+                            pos_element=values.get("pos_element", 0),
+                            bucle=values.get("implicitly_wait", 50),
+                            exist=values.get("exist", False),
+                            )
 
                     elif keys == "find_elements_for_text":
                         _element = self.elements[values["pos_element"]]
@@ -209,9 +227,13 @@ class HandlerWebSelenium:
                                     "type": _element["type"],
                                     "value": path,
                                 }
-                                element = self._find_element(False,new_dict)
+                                element = self._find_element(
+                            new_dict=new_dict,
+                            bucle=values.get("implicitly_wait", 50),
+                            exist=values.get("exist", False),
+                            )
                                 
-                                if element.text == _element["text"]:
+                                if element.text == _element["search_text"]:
                                     if values["click"]:
                                         element.click()
                                         break
@@ -220,12 +242,17 @@ class HandlerWebSelenium:
                                     break
 
                     elif keys == "write":
-                        element.send_keys(values["text"])
+                        element.send_keys(values["set_text"])
 
                     elif keys == "click":
                         if values:
-                            element = self._find_element(values["pos_element"],values.get("implicitly_wait", 50))
+                            element = self._find_element(
+                                values["pos_element"],
+                                bucle=values.get("implicitly_wait", 50),
+                                exist=values.get("exist", False)
+                                )
                         element.click()
+                        print(f"Click in: {values.get('name_element', 'NN')}")
 
                     elif keys == "loop_list":
                         for pos in range(values["start"], values["end"] + 1):
@@ -242,15 +269,16 @@ class HandlerWebSelenium:
                                     "value": path,
                                 }
                                 element = self._find_element(False,new_dict)
-                                if values["text"]:
+                                if values["get_text"]:
                                     self.list_of_list.append(element.text)
                                 else:
                                     self.list_of_list.append(element)
-                            except Exception:
+                            except Exception as e:
+                                print(f"ERROR: {type(e).__name__}")
                                 if values["end_loop"]:
                                     break
-                        print(f"\nContenido de la lista obtenida:\nContenido:\n{self.list_of_list}\n\n")
-                    
+                        print(f"\nContent of the obtained list:\n{self.list_of_list}\n")
+
                     if values.get("sleep", 0):
                         self.time_sleep(values['sleep'], values.get('type_sleep', "simple_show"))
                 counter += 1
@@ -260,49 +288,56 @@ class HandlerWebSelenium:
             return False
         return True
 
-    def _find_element(self, value, new_dict = {}, bucle = 0):
+    def _find_element(self, pos_element = 0, new_element = {}, bucle = 0, exist = False):
         # (04)
-        if new_dict:
-            _type = new_dict["type"]
-            _value = new_dict["value"]
+        if new_element:
+            _type = new_element["type"]
+            _value = new_element["value"]
+            _name_element = new_element.get("name_element", "NN")
         else:
-            _type = self.elements[value]["type"]
-            _value = self.elements[value]["value"]
+            _type = self.elements[pos_element]["type"]
+            _value = self.elements[pos_element]["value"]
+            _name_element = self.elements[pos_element].get("name_element", "NN")
+        print(f">> Search: {_name_element} > Bucle: {bucle} > Exist: {exist}")
 
-        while True:
-            if _type == "NAME":
-                By_VALUE = By.NAME
-            elif _type == "CLASS_NAME":
-                By_VALUE = By.CLASS_NAME
-            elif _type == "CSS_SELECTOR":
-                By_VALUE = By.CSS_SELECTOR
-            elif _type == "ID":
-                By_VALUE = By.ID
-            elif _type == "XPATH":
-                By_VALUE = By.XPATH
-            elif _type == "LINK_TEXT":
-                By_VALUE = By.LINK_TEXT
-            elif _type == "PARTIAL_LINK_TEXT":
-                By_VALUE = By.PARTIAL_LINK_TEXT
+        if _type == "NAME":
+            By_VALUE = By.NAME
+        elif _type == "CLASS_NAME":
+            By_VALUE = By.CLASS_NAME
+        elif _type == "CSS_SELECTOR":
+            By_VALUE = By.CSS_SELECTOR
+        elif _type == "ID":
+            By_VALUE = By.ID
+        elif _type == "XPATH":
+            By_VALUE = By.XPATH
+        elif _type == "LINK_TEXT":
+            By_VALUE = By.LINK_TEXT
+        elif _type == "PARTIAL_LINK_TEXT":
+            By_VALUE = By.PARTIAL_LINK_TEXT
             
+        while True:
             try:
                 element = self.driver.find_element(by=By_VALUE, value=_value)
                 if element:
+                    print("Found element")
                     return element
             except NoSuchElementException:
-                print(f"No se encontró el elemento")
-                if not bucle:
+                print("Not found element")
+                if exist == True and bucle <= 0:
+                    print(">> ERROR > NO LOOP - End element search without success")
+                    raise NoSuchElementException
+                elif not bucle:
+                    print(">> ERROR > NO LOOP - End element search without success")
                     return None
                 elif bucle == -1:
                     pass
                 elif bucle > 0:
+                    print("Active search")
                     bucle -= 1
                 else:
-                    return element
-
-        
-        # Devolvemos el elemento
-        return element
+                    print("End element search without success")
+                    return None
+            sleep(1)
 
     def _move_mouse(self):
         """La función se ejecuta mientras la variable move_mouse sea True, por lo que se puede desactivar desde fuera.
@@ -408,6 +443,9 @@ class HandlerWebSelenium:
                 if time > 1:
                     print(f"Sleep: {time}")
                     sleep(1)
+                else:
+                    print(f"Sleep: {round(time,1)}")
+                    sleep(time)
                 time -= 1
             print(f"Sleep: 0")
         else:
